@@ -28,28 +28,58 @@ def save_seen_cars(cars_list):
 
 def send_telegram_alert(item):
     try:
-        # Car data is nested inside '_source'
         car = item.get('_source', {})
         
+        # Extract rich details from the Burp log schema
         model_name = car.get('name', 'Unknown Model').title()
         mf_year = car.get('mfYear', 'Unknown Year')
         price = car.get('price', 0)
+        km_run = car.get('kmRun', 0)
+        fuel_type = car.get('fuelType', 'N/A').title()
+        transmission = car.get('transmissionType', 'N/A').title()
+        owners = car.get('numberOfOwner', 'N/A')
+        reg_num = car.get('registrationNumber', 'N/A').upper()
+        dealer_name = car.get('dealerName', 'True Value Dealer').title()
         
-        # Format the price nicely with commas
+        # Formatting
         formatted_price = f"₹ {price:,}" if isinstance(price, (int, float)) else f"₹ {price}"
+        formatted_km = f"{km_run:,} km" if isinstance(km_run, (int, float)) else f"{km_run} km"
         
-        # Construct the live URL
+        # Build URL
         detail_url = car.get('detailUrl', '')
         car_url = f"https://www.marutisuzukitruevalue.com/buy-car/{detail_url}" if detail_url else MAIN_PAGE_URL
 
-        msg = (f"🚨 **NEW LOW PRICE CAR IN GOA** 🚨\n\n"
-               f"🚗 **Model:** {model_name} ({mf_year})\n"
-               f"💰 **Price:** {formatted_price}\n"
-               f"🔗 [View Listing]({car_url})")
+        # Sleek HTML Layout
+        msg = (
+            f"🚀 <b>NEW LISTING DETECTED UNDER BUDGET!</b>\n\n"
+            f"🏎️ <b>{model_name} ({mf_year})</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💰 <b>Price:</b> {formatted_price}\n"
+            f"🛣️ <b>Mileage:</b> {formatted_km}\n"
+            f"⛽ <b>Fuel:</b> {fuel_type}  |  ⚙️ <b>Transmission:</b> {transmission}\n"
+            f"👤 <b>Owners:</b> {owners} Owner(s)\n"
+            f"🆔 <b>Reg No:</b> {reg_num}\n\n"
+            f"📍 <b>Location:</b> {dealer_name}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━"
+        )
+        
+        # Create a premium inline button payload
+        reply_markup = {
+            "inline_keyboard": [
+                [{"text": "View Full Listing 🔗", "url": car_url}]
+            ]
+        }
         
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"})
-        print(f"--> Telegram alert sent for: {model_name}")
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": msg,
+            "parse_mode": "HTML",
+            "reply_markup": json.dumps(reply_markup)
+        }
+        
+        requests.post(url, data=payload)
+        print(f"--> Rich Telegram alert sent for: {model_name}")
     except Exception as e:
         print(f"--> Failed to send Telegram alert: {e}")
 
@@ -92,15 +122,12 @@ def check_true_value():
         
         raw_data = response.json()
         
-        # Double-decode the JSON string if True Value wrapped it in quotes
         if isinstance(raw_data, str):
             data = json.loads(raw_data)
         else:
             data = raw_data
             
-        # Navigate the Elasticsearch maze
         car_list = data.get('carResult', {}).get('hits', {}).get('hits', [])
-        
         print(f"4. Number of cars identified: {len(car_list)}")
 
         seen_cars = get_seen_cars()
@@ -108,12 +135,10 @@ def check_true_value():
         new_cars_found = False
 
         for item in car_list:
-            # The unique ID sits outside the car details
             car_id = item.get('_id')
             car_source = item.get('_source', {})
             car_price = int(car_source.get('price', 9999999))
             
-            # Double check the budget locally just in case their API ignores our payload
             if car_id and car_id not in seen_cars and car_price <= MAX_BUDGET:
                 if not is_first_run:
                     send_telegram_alert(item)
