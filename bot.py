@@ -5,7 +5,7 @@ import os
 # --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-MAX_BUDGET = 300000 
+MAX_BUDGET = 160000 
 
 MAIN_PAGE_URL = "https://www.marutisuzukitruevalue.com/used-cars-in-goa/1"
 API_URL = "https://www.marutisuzukitruevalue.com/api/sitecore/CarSearchListing/CarSearchHits"
@@ -30,7 +30,7 @@ def send_telegram_alert(item):
     try:
         car = item.get('_source', {})
         
-        # Extract rich details from the Burp log schema
+        # Extract rich details from the schema
         model_name = car.get('name', 'Unknown Model').title()
         mf_year = car.get('mfYear', 'Unknown Year')
         price = car.get('price', 0)
@@ -39,13 +39,19 @@ def send_telegram_alert(item):
         transmission = car.get('transmissionType', 'N/A').title()
         owners = car.get('numberOfOwner', 'N/A')
         reg_num = car.get('registrationNumber', 'N/A').upper()
-        dealer_name = car.get('dealerName', 'True Value Dealer').title()
         
-        # Formatting
+        # Safely capture both dealer name and precise address details
+        dealer_name = car.get('dealerName', 'True Value Dealer').title()
+        dealer_address = car.get('dealerAddress', '').title()
+        
+        # Fall back gracefully if dealerAddress field isn't populated
+        exact_location = dealer_address if dealer_address else dealer_name
+        
+        # Formatting parameters
         formatted_price = f"₹ {price:,}" if isinstance(price, (int, float)) else f"₹ {price}"
         formatted_km = f"{km_run:,} km" if isinstance(km_run, (int, float)) else f"{km_run} km"
         
-        # Build URL
+        # Build URL pathways
         detail_url = car.get('detailUrl', '')
         car_url = f"https://www.marutisuzukitruevalue.com/buy-car/{detail_url}" if detail_url else MAIN_PAGE_URL
 
@@ -59,11 +65,12 @@ def send_telegram_alert(item):
             f"⛽ <b>Fuel:</b> {fuel_type}  |  ⚙️ <b>Transmission:</b> {transmission}\n"
             f"👤 <b>Owners:</b> {owners} Owner(s)\n"
             f"🆔 <b>Reg No:</b> {reg_num}\n\n"
-            f"📍 <b>Location:</b> {dealer_name}\n"
+            f"🏢 <b>Dealer:</b> {dealer_name}\n"
+            f"📍 <b>Location:</b> {exact_location}\n"
             f"━━━━━━━━━━━━━━━━━━━━━"
         )
         
-        # Create a premium inline button payload
+        # Create premium inline button layout
         reply_markup = {
             "inline_keyboard": [
                 [{"text": "View Full Listing 🔗", "url": car_url}]
@@ -137,7 +144,13 @@ def check_true_value():
         for item in car_list:
             car_id = item.get('_id')
             car_source = item.get('_source', {})
-            car_price = int(car_source.get('price', 9999999))
+            
+            # Safely grab and parse the pricing threshold
+            raw_price = car_source.get('price', 9999999)
+            try:
+                car_price = int(raw_price)
+            except (ValueError, TypeError):
+                car_price = 9999999
             
             if car_id and car_id not in seen_cars and car_price <= MAX_BUDGET:
                 if not is_first_run:
