@@ -5,7 +5,11 @@ import os
 # --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-MAX_BUDGET = 300000 
+
+# TEMPORARY TEST BUDGET: Set to 10 Lakhs (1,000,000) to force the bot to find cars. 
+# Once you confirm it works, change this back to 300000.
+MAX_BUDGET = 1000000 
+
 API_URL = "https://www.marutisuzukitruevalue.com/api/sitecore/CarSearchListing/CarSearchHits"
 SEEN_CARS_FILE = "seen_cars.json"
 
@@ -67,13 +71,16 @@ def check_true_value():
     }
 
     try:
-        print("2. Sending request to True Value API...")
+        print(f"2. Sending request to True Value API with Max Budget: {MAX_BUDGET}...")
         response = requests.post(API_URL, headers=headers, json=payload)
         print(f"   HTTP Status Code: {response.status_code}")
         response.raise_for_status() 
         
         data = response.json()
         print("3. Successfully parsed JSON data from website.")
+        
+        # --- DIAGNOSTIC X-RAY: PRINT THE RAW DATA ---
+        print(f"\n[RAW DATA DUMP]: {json.dumps(data)[:1000]}\n")
         
         # Check exactly what the API returned
         if 'Hits' in data:
