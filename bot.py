@@ -1,6 +1,7 @@
 import requests
 import json
 import os
+import time
 
 # --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -8,7 +9,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 MAX_BUDGET = 160000 
 
 MAIN_PAGE_URL = "https://www.marutisuzukitruevalue.com/used-cars-in-goa/1"
-API_URL = "https://www.marutisuzukitruevalue.com/api/sitecore/CarSearchListing/CarSearchHits"
+API_URL = "https://www.marutisuzukitruevalue.com/api/sitecore/Menu/GetSearch"
 SEEN_CARS_FILE = "seen_cars.json"
 
 def get_seen_cars():
@@ -30,7 +31,6 @@ def send_telegram_alert(item):
     try:
         car = item.get('_source', {})
         
-        # Extract rich details from the schema
         model_name = car.get('name', 'Unknown Model').title()
         mf_year = car.get('mfYear', 'Unknown Year')
         price = car.get('price', 0)
@@ -40,25 +40,24 @@ def send_telegram_alert(item):
         owners = car.get('numberOfOwner', 'N/A')
         reg_num = car.get('registrationNumber', 'N/A').upper()
         
-        # Safely capture both dealer name and precise address details
+        # Pull backend status tags
+        booked_date = item.get('BookedDate', None)
+        live_status = "⚠️ RESERVED / HOLD" if booked_date else "✅ UNBOOKED (AVAILABLE)"
+        
         dealer_name = car.get('dealerName', 'True Value Dealer').title()
         dealer_address = car.get('dealerAddress', '').title()
-        
-        # Fall back gracefully if dealerAddress field isn't populated
         exact_location = dealer_address if dealer_address else dealer_name
         
-        # Formatting parameters
         formatted_price = f"₹ {price:,}" if isinstance(price, (int, float)) else f"₹ {price}"
         formatted_km = f"{km_run:,} km" if isinstance(km_run, (int, float)) else f"{km_run} km"
         
-        # Build URL pathways
         detail_url = car.get('detailUrl', '')
         car_url = f"https://www.marutisuzukitruevalue.com/buy-car/{detail_url}" if detail_url else MAIN_PAGE_URL
 
-        # Sleek HTML Layout
         msg = (
-            f"🚀 <b>NEW LISTING DETECTED UNDER BUDGET!</b>\n\n"
+            f"🚀 <b>NEW LISTING DETECTED!</b>\n\n"
             f"🏎️ <b>{model_name} ({mf_year})</b>\n"
+            f"📊 <b>Status:</b> {live_status}\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"💰 <b>Price:</b> {formatted_price}\n"
             f"🛣️ <b>Mileage:</b> {formatted_km}\n"
@@ -70,7 +69,6 @@ def send_telegram_alert(item):
             f"━━━━━━━━━━━━━━━━━━━━━"
         )
         
-        # Create premium inline button layout
         reply_markup = {
             "inline_keyboard": [
                 [{"text": "View Full Listing 🔗", "url": car_url}]
@@ -85,15 +83,13 @@ def send_telegram_alert(item):
             "reply_markup": json.dumps(reply_markup)
         }
         
-        requests.post(url, data=payload)
-        print(f"--> Rich Telegram alert sent for: {model_name}")
+        requests.post(url, data=payload, timeout=10)
+        print(f"--> Telegram broadcast processed for: {model_name}")
     except Exception as e:
         print(f"--> Failed to send Telegram alert: {e}")
 
 def check_true_value():
-    print("1. Initializing browser session...")
     session = requests.Session()
-    
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
         "Accept": "application/json, text/javascript, */*; q=0.01",
@@ -105,9 +101,8 @@ def check_true_value():
     }
 
     try:
-        print("2. Warming up session cookies from main page...")
-        warmup_response = session.get(MAIN_PAGE_URL, headers={"User-Agent": headers["User-Agent"]})
-        warmup_response.raise_for_status()
+        # Added direct layout cookie warming call
+        session.get(MAIN_PAGE_URL, headers={"User-Agent": headers["User-Agent"]}, timeout=10)
         
         payload = {
             "dealerCode": [], "fuelType": [], "listingCity": [], "transmissionType": [], 
@@ -122,20 +117,17 @@ def check_true_value():
             "location": {"Lat": "15.2993265", "Lon": "74.12399599999999"}
         }
 
-        print("3. Sending API request with live session tokens...")
-        response = session.post(API_URL, headers=headers, json=payload)
-        print(f"   HTTP Status Code: {response.status_code}")
-        response.raise_for_status() 
-        
+        # Fixed target endpoint to use menu query mapping structure
+        response = session.post(API_URL, headers=headers, json=payload, timeout=15)
+        if response.status_code != 200:
+            print(f"--> Warning: Server returned code {response.status_code}. Retrying next loop.")
+            return
+
         raw_data = response.json()
-        
-        if isinstance(raw_data, str):
-            data = json.loads(raw_data)
-        else:
-            data = raw_data
+        data = json.loads(raw_data) if isinstance(raw_data, str) else raw_data
             
         car_list = data.get('carResult', {}).get('hits', {}).get('hits', [])
-        print(f"4. Number of cars identified: {len(car_list)}")
+        print(f"📡 Current scan sweep: {len(car_list)} matching inventory logs found.")
 
         seen_cars = get_seen_cars()
         is_first_run = len(seen_cars) == 0 
@@ -145,7 +137,6 @@ def check_true_value():
             car_id = item.get('_id')
             car_source = item.get('_source', {})
             
-            # Safely grab and parse the pricing threshold
             raw_price = car_source.get('price', 9999999)
             try:
                 car_price = int(raw_price)
@@ -160,12 +151,15 @@ def check_true_value():
 
         if is_first_run or new_cars_found:
             save_seen_cars(seen_cars)
-            print("5. Local tracking database updated.")
-        else:
-            print("5. No new inventory updates detected.")
+            print("Database transaction logs synchronized safely.")
 
+    except requests.exceptions.Timeout:
+        print("--> Connection timed out while waiting for cluster endpoint. Skipping turn.")
     except Exception as e:
-        print(f"CRITICAL SYSTEM ERROR: {e}")
+        print(f"--> Execution anomaly: {e}")
 
 if __name__ == "__main__":
-    check_true_value()
+    print("🚀 TARGET ACQUIRED: Launching constant live loop tracking (5m intervals)...")
+    while True:
+        check_true_value()
+        time.sleep(300)
