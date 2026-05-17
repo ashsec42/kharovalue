@@ -34,7 +34,6 @@ jobs:
 
       # Endless loop handover mechanism
       # Fires a repository dispatch payload back to this exact file to spawn the next runner cleanly
-       Kak-Link Next Continuous Run
       - name: Chain-Link Next Continuous Run
         if: always()
         run: |
