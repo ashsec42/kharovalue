@@ -2,14 +2,16 @@ import requests
 import json
 import os
 import time
+import subprocess
 
 # --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-MAX_BUDGET = 160000 
+MAX_BUDGET = 200000 # Set to 2L to catch those new listings! Drop back to 160000 later if desired.
 
 MAIN_PAGE_URL = "https://www.marutisuzukitruevalue.com/used-cars-in-goa/1"
-API_URL = "https://www.marutisuzukitruevalue.com/api/sitecore/Menu/GetSearch"
+# KEEPING YOUR WORKING URL:
+API_URL = "https://www.marutisuzukitruevalue.com/api/sitecore/CarSearchListing/CarSearchHits"
 SEEN_CARS_FILE = "seen_cars.json"
 
 def get_seen_cars():
@@ -23,9 +25,24 @@ def get_seen_cars():
         except json.JSONDecodeError:
             return []
 
-def save_seen_cars(cars_list):
+def save_and_sync_cars(cars_list):
+    # Save locally first
     with open(SEEN_CARS_FILE, 'w') as f:
         json.dump(cars_list, f)
+    
+    # Auto-commit and push changes so the 5.5-hour workflow chain remembers state
+    try:
+        subprocess.run(["git", "config", "--global", "user.name", "GitHub Actions Bot"], check=True)
+        subprocess.run(["git", "config", "--global", "user.email", "actions@github.com"], check=True)
+        subprocess.run(["git", "add", SEEN_CARS_FILE], check=True)
+        
+        check_diff = subprocess.run(["git", "diff", "--staged", "--quiet"])
+        if check_diff.returncode != 0:
+            subprocess.run(["git", "commit", "-m", "Radar Sync: Updated baseline trackers"], check=True)
+            subprocess.run(["git", "push"], check=True)
+            print("--> State synchronized and pushed to GitHub repository.")
+    except Exception as e:
+        print(f"--> Git push warning: {e}")
 
 def send_telegram_alert(item):
     try:
@@ -40,10 +57,6 @@ def send_telegram_alert(item):
         owners = car.get('numberOfOwner', 'N/A')
         reg_num = car.get('registrationNumber', 'N/A').upper()
         
-        # Pull backend status tags
-        booked_date = item.get('BookedDate', None)
-        live_status = "⚠️ RESERVED / HOLD" if booked_date else "✅ UNBOOKED (AVAILABLE)"
-        
         dealer_name = car.get('dealerName', 'True Value Dealer').title()
         dealer_address = car.get('dealerAddress', '').title()
         exact_location = dealer_address if dealer_address else dealer_name
@@ -55,9 +68,8 @@ def send_telegram_alert(item):
         car_url = f"https://www.marutisuzukitruevalue.com/buy-car/{detail_url}" if detail_url else MAIN_PAGE_URL
 
         msg = (
-            f"🚀 <b>NEW LISTING DETECTED!</b>\n\n"
+            f"🚀 <b>NEW LISTING DETECTED UNDER BUDGET!</b>\n\n"
             f"🏎️ <b>{model_name} ({mf_year})</b>\n"
-            f"📊 <b>Status:</b> {live_status}\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"💰 <b>Price:</b> {formatted_price}\n"
             f"🛣️ <b>Mileage:</b> {formatted_km}\n"
@@ -84,12 +96,14 @@ def send_telegram_alert(item):
         }
         
         requests.post(url, data=payload, timeout=10)
-        print(f"--> Telegram broadcast processed for: {model_name}")
+        print(f"--> Rich Telegram alert sent for: {model_name}")
     except Exception as e:
         print(f"--> Failed to send Telegram alert: {e}")
 
 def check_true_value():
+    print("1. Initializing browser session...")
     session = requests.Session()
+    
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
         "Accept": "application/json, text/javascript, */*; q=0.01",
@@ -101,8 +115,10 @@ def check_true_value():
     }
 
     try:
-        # Added direct layout cookie warming call
-        session.get(MAIN_PAGE_URL, headers={"User-Agent": headers["User-Agent"]}, timeout=10)
+        print("2. Warming up session cookies from main page...")
+        # Added strict 10s timeout to prevent script freezing on network drops
+        warmup_response = session.get(MAIN_PAGE_URL, headers={"User-Agent": headers["User-Agent"]}, timeout=10)
+        warmup_response.raise_for_status()
         
         payload = {
             "dealerCode": [], "fuelType": [], "listingCity": [], "transmissionType": [], 
@@ -117,17 +133,17 @@ def check_true_value():
             "location": {"Lat": "15.2993265", "Lon": "74.12399599999999"}
         }
 
-        # Fixed target endpoint to use menu query mapping structure
+        print("3. Sending API request with live session tokens...")
+        # Added strict 15s timeout to catch target server delays
         response = session.post(API_URL, headers=headers, json=payload, timeout=15)
-        if response.status_code != 200:
-            print(f"--> Warning: Server returned code {response.status_code}. Retrying next loop.")
-            return
-
+        print(f"   HTTP Status Code: {response.status_code}")
+        response.raise_for_status() 
+        
         raw_data = response.json()
         data = json.loads(raw_data) if isinstance(raw_data, str) else raw_data
             
         car_list = data.get('carResult', {}).get('hits', {}).get('hits', [])
-        print(f"📡 Current scan sweep: {len(car_list)} matching inventory logs found.")
+        print(f"4. Number of cars identified: {len(car_list)}")
 
         seen_cars = get_seen_cars()
         is_first_run = len(seen_cars) == 0 
@@ -150,16 +166,19 @@ def check_true_value():
                 new_cars_found = True
 
         if is_first_run or new_cars_found:
-            save_seen_cars(seen_cars)
-            print("Database transaction logs synchronized safely.")
+            save_and_sync_cars(seen_cars)
+            print("5. Local tracking database updated.")
+        else:
+            print("5. No new inventory updates detected.")
 
     except requests.exceptions.Timeout:
-        print("--> Connection timed out while waiting for cluster endpoint. Skipping turn.")
+        print("--> Connection timed out waiting for server response. Skipping this cycle.")
     except Exception as e:
-        print(f"--> Execution anomaly: {e}")
+        print(f"CRITICAL SYSTEM ERROR: {e}")
 
 if __name__ == "__main__":
     print("🚀 TARGET ACQUIRED: Launching constant live loop tracking (5m intervals)...")
     while True:
         check_true_value()
+        print("💤 Sleeping for 5 minutes...")
         time.sleep(300)
