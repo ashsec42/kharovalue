@@ -7,7 +7,7 @@ import subprocess
 # --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-MAX_BUDGET = 200000 # Set to 2L to catch those new listings! Drop back to 160000 later if desired.
+MAX_BUDGET = 300000 # Set to 3L to catch those new listings! Drop back to 160000 later if desired.
 
 MAIN_PAGE_URL = "https://www.marutisuzukitruevalue.com/used-cars-in-goa/1"
 # KEEPING YOUR WORKING URL:
