@@ -7,11 +7,11 @@ import subprocess
 # --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-MAX_BUDGET = 300000 # Updated to 3L
+MAX_BUDGET = 300000 
 
 MAIN_PAGE_URL = "https://www.marutisuzukitruevalue.com/used-cars-in-goa"
-# NEW GRAPHQL ENDPOINT
-API_URL = "https://www.marutisuzukitruevalue.com/truevalue/api/graphql"
+MAIN_API_URL = "https://www.marutisuzukitruevalue.com/truevalue/api/graphql"
+DEALER_BACKDOOR_URL = "https://www.truevalueofnavelim.com/truevalue/api/graphql"
 SEEN_CARS_FILE = "seen_cars.json"
 
 def get_seen_cars():
@@ -46,9 +46,60 @@ def extract_attribute(attributes_list, target_name):
             return attr.get('value', 'N/A')
     return 'N/A'
 
+def get_unredacted_registration(sku, dealer_code):
+    """Hits the local dealer API to bypass corporate data redaction."""
+    print(f"   [!] Attempting backdoor fetch for Reg No: {sku}")
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Origin": "https://www.truevalueofnavelim.com"
+        }
+        
+        graphql_query = """
+        query productSearchByDealers($currentPage: Int = 1, $pageSize: Int = 100, $dealerIds: [String!]) { 
+            productSearch( current_page: $currentPage, page_size: $pageSize, phrase: "", filter: [ { attribute: "dealer_code" in: $dealerIds } ] ) { 
+                items { 
+                    productView { 
+                        sku 
+                        attributes(roles: []) { name value } 
+                    } 
+                } 
+            } 
+        }
+        """
+        
+        payload = {
+            "query": graphql_query,
+            "variables": {
+                "current_page": 1,
+                "page_size": 100,
+                "dealerIds": [dealer_code]
+            }
+        }
+        
+        response = requests.post(DEALER_BACKDOOR_URL, headers=headers, json=payload, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            items = data.get('data', {}).get('productSearch', {}).get('items', [])
+            
+            # Find our specific car in the dealer's inventory dump
+            for item in items:
+                view = item.get('productView', {})
+                if view.get('sku') == sku:
+                    reg_no = extract_attribute(view.get('attributes', []), 'registration_number')
+                    if reg_no != 'N/A':
+                        return reg_no.upper()
+    except Exception as e:
+        print(f"   [!] Backdoor fetch failed: {e}")
+        
+    return None
+
 def send_telegram_alert(car_view):
     try:
         model_name = car_view.get('name', 'Unknown Model').title()
+        sku = car_view.get('sku')
         attributes = car_view.get('attributes', [])
         
         try:
@@ -61,10 +112,17 @@ def send_telegram_alert(car_view):
         fuel_type = extract_attribute(attributes, 'fuel_type').title()
         transmission = extract_attribute(attributes, 'transmission_type').title()
         owners = extract_attribute(attributes, 'number_of_owners')
+        dealer_code = extract_attribute(attributes, 'dealer_code')
         
-        rto = extract_attribute(attributes, 'rto').upper()
-        rto_city = extract_attribute(attributes, 'rto_code').title()
-        reg_info = f"{rto} ({rto_city})" if rto != 'N/A' else "Unknown RTO"
+        # --- STAGE 2: THE SPEAR ---
+        # Try to get exact plate, fallback to RTO if blocked
+        reg_info = get_unredacted_registration(sku, dealer_code)
+        if not reg_info:
+            rto = extract_attribute(attributes, 'rto').upper()
+            rto_city = extract_attribute(attributes, 'rto_code').title()
+            reg_info = f"{rto} ({rto_city})" if rto != 'N/A' else "Unknown RTO"
+        else:
+            reg_info = f"🚨 <b>{reg_info}</b> 🚨" # Highlight success!
         
         dealer_name = extract_attribute(attributes, 'dealer_name').title()
         dealer_address = extract_attribute(attributes, 'dealer_location').title()
@@ -85,7 +143,7 @@ def send_telegram_alert(car_view):
             f"🛣️ <b>Mileage:</b> {formatted_km}\n"
             f"⛽ <b>Fuel:</b> {fuel_type}  |  ⚙️ <b>Transmission:</b> {transmission}\n"
             f"👤 <b>Owners:</b> {owners} Owner(s)\n"
-            f"🆔 <b>RTO:</b> {reg_info}\n\n"
+            f"🆔 <b>Reg/RTO:</b> {reg_info}\n\n"
             f"🏢 <b>Dealer:</b> {dealer_name}\n"
             f"📍 <b>Location:</b> {exact_location}\n"
             f"━━━━━━━━━━━━━━━━━━━━━"
@@ -115,12 +173,13 @@ def check_true_value():
     session = requests.Session()
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "*/*",
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": f"https://www.marutisuzukitruevalue.com/used-cars-in-goa?filters=price%3A0+-+{MAX_BUDGET}"
     }
 
+    # --- STAGE 1: THE NET ---
     graphql_query = f"""
     query ProductSearch {{
       productSearch(
@@ -164,14 +223,14 @@ def check_true_value():
     """
 
     try:
-        print("2. Sending GraphQL request...")
+        print("2. Sending Main GraphQL request...")
         
         params = {
             "query": graphql_query,
             "variables": '{"id":2}'
         }
         
-        response = session.get(API_URL, headers=headers, params=params, timeout=15)
+        response = session.get(MAIN_API_URL, headers=headers, params=params, timeout=15)
         print(f"   HTTP Status Code: {response.status_code}")
         response.raise_for_status() 
         
