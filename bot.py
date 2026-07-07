@@ -61,6 +61,19 @@ def send_telegram_alert(car_view):
         transmission = extract_attribute(attributes, 'transmission_type').title()
         owners = extract_attribute(attributes, 'number_of_owners')
         
+        # Color, Variant, Warranty
+        car_color = extract_attribute(attributes, 'color').title()
+        variant = extract_attribute(attributes, 'car_variant').upper()
+        
+        certified_raw = extract_attribute(attributes, 'true_value_certified')
+        certified = "Yes ✅" if certified_raw.lower() == 'yes' else "No ❌"
+        
+        warranty_raw = extract_attribute(attributes, 'warranty_info')
+        if warranty_raw == '0M' or warranty_raw == '0' or warranty_raw == 'N/A':
+            warranty = "None"
+        else:
+            warranty = warranty_raw
+
         # DEEP DETAILS EXTRACTION
         reg_date_raw = extract_attribute(attributes, 'registration_date')
         reg_date = reg_date_raw.split(' ')[0] if reg_date_raw != 'N/A' else 'N/A'
@@ -78,7 +91,7 @@ def send_telegram_alert(car_view):
         dealer_address = extract_attribute(attributes, 'dealer_location').title()
         exact_location = dealer_address if dealer_address and dealer_address != 'N/A' else dealer_name
         
-        # --- 📞 EXACT PHONE NUMBER EXTRACTION ---
+        # EXACT PHONE NUMBER EXTRACTION
         dealer_info_str = extract_attribute(attributes, 'dealer_additional_info')
         phone_number = "Not Provided"
         if dealer_info_str != 'N/A':
@@ -88,9 +101,9 @@ def send_telegram_alert(car_view):
             except json.JSONDecodeError:
                 pass
                 
-        # --- 📸 PRIMARY IMAGE EXTRACTION ---
+        # --- 📸 ALL IMAGES EXTRACTION ---
         images = car_view.get('images', [])
-        image_url = images[0].get('url') if images else None
+        image_urls = [img.get('url') for img in images if img.get('url')]
 
         # Formatting
         formatted_price = f"₹ {int(price):,}" if price else "Price N/A"
@@ -102,13 +115,17 @@ def send_telegram_alert(car_view):
         msg = (
             f"🚀 <b>NEW LISTING DETECTED!</b>\n\n"
             f"🏎️ <b>{model_name}</b>\n"
+            f"🏷️ <b>Variant:</b> {variant}\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"💰 <b>Price:</b> {formatted_price}\n"
             f"🛣️ <b>Mileage:</b> {formatted_km}\n"
+            f"🎨 <b>Color:</b> {car_color}\n"
             f"📅 <b>Registered:</b> {reg_date}\n"
             f"⛽ <b>Fuel:</b> {fuel_type}  |  ⚙️ <b>Trans:</b> {transmission}\n"
             f"👤 <b>Owners:</b> {owners} Owner(s)\n"
             f"🆔 <b>RTO:</b> {reg_info}\n\n"
+            f"🛡️ <b>Certified:</b> {certified}\n"
+            f"📑 <b>Warranty:</b> {warranty}\n\n"
             f"🛠️ <b>MECHANICAL RATINGS:</b>\n"
             f"  • Engine: {engine} / 5.0\n"
             f"  • Exterior: {exterior} / 5.0\n"
@@ -127,26 +144,41 @@ def send_telegram_alert(car_view):
         }
         
         # --- 📡 TELEGRAM PAYLOAD ROUTING ---
-        if image_url:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-            payload = {
+        if image_urls:
+            # 1. Send the primary image with the text caption and the button
+            url_main = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+            payload_main = {
                 "chat_id": TELEGRAM_CHAT_ID,
-                "photo": image_url,
+                "photo": image_urls[0],
                 "caption": msg,
                 "parse_mode": "HTML",
                 "reply_markup": json.dumps(reply_markup)
             }
+            requests.post(url_main, data=payload_main, timeout=10)
+            
+            # 2. If there are more images, send them as a swipeable gallery
+            if len(image_urls) > 1:
+                # Telegram allows max 10 photos per media group. We sent 1, so we take up to 9 more.
+                media_group = [{"type": "photo", "media": url} for url in image_urls[1:10]]
+                url_gallery = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMediaGroup"
+                payload_gallery = {
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "media": media_group
+                }
+                requests.post(url_gallery, json=payload_gallery, timeout=15)
+                
         else:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            payload = {
+            # Fallback if no images exist
+            url_text = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            payload_text = {
                 "chat_id": TELEGRAM_CHAT_ID,
                 "text": msg,
                 "parse_mode": "HTML",
                 "reply_markup": json.dumps(reply_markup)
             }
-        
-        requests.post(url, data=payload, timeout=10)
-        print(f"--> Rich Telegram alert sent for: {model_name}")
+            requests.post(url_text, data=payload_text, timeout=10)
+            
+        print(f"--> Rich Telegram alert & gallery sent for: {model_name}")
     except Exception as e:
         print(f"--> Failed to send Telegram alert: {e}")
 
