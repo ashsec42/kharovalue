@@ -55,21 +55,44 @@ def send_telegram_alert(car_view):
         except KeyError:
             price = 0
             
-        mf_year = extract_attribute(attributes, 'make_year') 
+        # Basic Info
         km_run = extract_attribute(attributes, 'distance_driven')
         fuel_type = extract_attribute(attributes, 'fuel_type').title()
         transmission = extract_attribute(attributes, 'transmission_type').title()
         owners = extract_attribute(attributes, 'number_of_owners')
         
+        # DEEP DETAILS EXTRACTION
+        reg_date_raw = extract_attribute(attributes, 'registration_date')
+        reg_date = reg_date_raw.split(' ')[0] if reg_date_raw != 'N/A' else 'N/A'
+        engine = extract_attribute(attributes, 'engine_rating')[:3]
+        exterior = extract_attribute(attributes, 'exterior_rating')[:3]
+        suspension = extract_attribute(attributes, 'suspension_rating')[:3]
+        functional = extract_attribute(attributes, 'functional_rating')[:3]
+        
+        # Location & RTO
         rto = extract_attribute(attributes, 'rto').upper()
         rto_city = extract_attribute(attributes, 'rto_code').title()
         reg_info = f"{rto} ({rto_city})" if rto != 'N/A' else "Unknown RTO"
         
         dealer_name = extract_attribute(attributes, 'dealer_name').title()
         dealer_address = extract_attribute(attributes, 'dealer_location').title()
-        
         exact_location = dealer_address if dealer_address and dealer_address != 'N/A' else dealer_name
         
+        # --- 📞 EXACT PHONE NUMBER EXTRACTION ---
+        dealer_info_str = extract_attribute(attributes, 'dealer_additional_info')
+        phone_number = "Not Provided"
+        if dealer_info_str != 'N/A':
+            try:
+                dealer_json = json.loads(dealer_info_str)
+                phone_number = dealer_json.get('phone', 'Not Provided')
+            except json.JSONDecodeError:
+                pass
+                
+        # --- 📸 PRIMARY IMAGE EXTRACTION ---
+        images = car_view.get('images', [])
+        image_url = images[0].get('url') if images else None
+
+        # Formatting
         formatted_price = f"₹ {int(price):,}" if price else "Price N/A"
         formatted_km = f"{int(km_run):,} km" if km_run != 'N/A' else "N/A km"
         
@@ -77,16 +100,23 @@ def send_telegram_alert(car_view):
         car_url = f"https://www.marutisuzukitruevalue.com/buy-car/{url_key}" if url_key else MAIN_PAGE_URL
 
         msg = (
-            f"🚀 <b>NEW LISTING DETECTED UNDER BUDGET!</b>\n\n"
-            f"🏎️ <b>{model_name} ({mf_year})</b>\n"
+            f"🚀 <b>NEW LISTING DETECTED!</b>\n\n"
+            f"🏎️ <b>{model_name}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"💰 <b>Price:</b> {formatted_price}\n"
             f"🛣️ <b>Mileage:</b> {formatted_km}\n"
-            f"⛽ <b>Fuel:</b> {fuel_type}  |  ⚙️ <b>Transmission:</b> {transmission}\n"
+            f"📅 <b>Registered:</b> {reg_date}\n"
+            f"⛽ <b>Fuel:</b> {fuel_type}  |  ⚙️ <b>Trans:</b> {transmission}\n"
             f"👤 <b>Owners:</b> {owners} Owner(s)\n"
             f"🆔 <b>RTO:</b> {reg_info}\n\n"
+            f"🛠️ <b>MECHANICAL RATINGS:</b>\n"
+            f"  • Engine: {engine} / 5.0\n"
+            f"  • Exterior: {exterior} / 5.0\n"
+            f"  • Suspension: {suspension} / 5.0\n"
+            f"  • Functional: {functional} / 5.0\n\n"
             f"🏢 <b>Dealer:</b> {dealer_name}\n"
             f"📍 <b>Location:</b> {exact_location}\n"
+            f"📞 <b>Contact:</b> <code>{phone_number}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━"
         )
         
@@ -96,13 +126,24 @@ def send_telegram_alert(car_view):
             ]
         }
         
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": msg,
-            "parse_mode": "HTML",
-            "reply_markup": json.dumps(reply_markup)
-        }
+        # --- 📡 TELEGRAM PAYLOAD ROUTING ---
+        if image_url:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+            payload = {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "photo": image_url,
+                "caption": msg,
+                "parse_mode": "HTML",
+                "reply_markup": json.dumps(reply_markup)
+            }
+        else:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            payload = {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": msg,
+                "parse_mode": "HTML",
+                "reply_markup": json.dumps(reply_markup)
+            }
         
         requests.post(url, data=payload, timeout=10)
         print(f"--> Rich Telegram alert sent for: {model_name}")
@@ -113,7 +154,6 @@ def check_true_value():
     print("1. Initializing browser session...")
     session = requests.Session()
     
-    # NEW Magento Security Headers
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "application/json",
@@ -125,7 +165,6 @@ def check_true_value():
         "Referer": "https://www.marutisuzukitruevalue.com/"
     }
 
-    # EXACT GraphQL payload targeting Goa dealers
     payload = {
         "query": "query productSearchByDealers($currentPage: Int = 1, $pageSize: Int = 100, $dealerIds: [String!]) { productSearch( current_page: $currentPage, page_size: $pageSize, phrase: \"\", filter: [ { attribute: \"dealer_code\" in: $dealerIds } ], sort: [{ attribute: \"inStock\", direction: DESC }, { attribute: \"distance_driven\", direction: ASC }] ) { items { productView { __typename sku externalId name urlKey url shortDescription description metaDescription metaKeyword metaTitle lastModifiedAt inStock images(roles: [\"image\"]) { url } attributes(roles: []) { name value } ... on SimpleProductView { price { ...priceFields } } ... on ComplexProductView { priceRange { maximum { ...priceFields } minimum { ...priceFields } } } } } page_info { current_page page_size total_pages } total_count } } fragment priceFields on ProductViewPrice { regular { amount { currency value } } final { amount { currency value } } } ",
         "variables": {
@@ -147,7 +186,6 @@ def check_true_value():
         
         data = response.json()
         
-        # Traverse the new Magento structure
         car_list = data.get('data', {}).get('productSearch', {}).get('items', [])
         print(f"3. Number of cars identified: {len(car_list)}")
 
@@ -162,7 +200,6 @@ def check_true_value():
             if not car_id:
                 continue
                 
-            # Skip cars that are already marked out of stock
             if not car_view.get('inStock', False):
                 continue
 
