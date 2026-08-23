@@ -1,225 +1,139 @@
 import requests
 import json
 import os
-import time
-import subprocess
 
-# --- CONFIGURATION ---
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-MAX_BUDGET = 300000 # Updated to 3L
+# --- Constants & Configuration ---
+# Your Telegram credentials and max budget limit
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+MAX_BUDGET = 200000 # Your 2 Lakh limit
 
-MAIN_PAGE_URL = "https://www.marutisuzukitruevalue.com/used-cars-in-goa"
 API_URL = "https://www.marutisuzukitruevalue.com/truevalue/api/graphql"
-SEEN_CARS_FILE = "seen_cars.json"
+DB_FILE = "seen_cars.json"
 
+# --- Database Functions ---
 def get_seen_cars():
-    if not os.path.exists(SEEN_CARS_FILE) or os.path.getsize(SEEN_CARS_FILE) == 0:
-        return []
-    with open(SEEN_CARS_FILE, 'r') as f:
+    if os.path.exists(DB_FILE):
         try:
-            return json.load(f)
+            with open(DB_FILE, 'r') as f:
+                return json.load(f)
         except json.JSONDecodeError:
             return []
+    return []
 
-def save_and_sync_cars(cars_list):
-    with open(SEEN_CARS_FILE, 'w') as f:
-        json.dump(cars_list, f)
-    
-    try:
-        subprocess.run(["git", "config", "--global", "user.name", "GitHub Actions Bot"], check=True)
-        subprocess.run(["git", "config", "--global", "user.email", "actions@github.com"], check=True)
-        subprocess.run(["git", "add", SEEN_CARS_FILE], check=True)
-        
-        check_diff = subprocess.run(["git", "diff", "--staged", "--quiet"])
-        if check_diff.returncode != 0:
-            subprocess.run(["git", "commit", "-m", "Radar Sync: Updated baseline trackers"], check=True)
-            subprocess.run(["git", "push"], check=True)
-            print("--> State synchronized and pushed to GitHub repository.")
-    except Exception as e:
-        print(f"--> Git push warning: {e}")
+def save_and_sync_cars(cars):
+    with open(DB_FILE, 'w') as f:
+        json.dump(cars, f)
 
-def extract_attribute(attributes_list, target_name):
+# --- Helper Functions ---
+def extract_attribute(attributes_list, attr_name):
+    """Pulls a specific filter out of Maruti's giant attribute array."""
     for attr in attributes_list:
-        if attr.get('name') == target_name:
+        if attr.get('name') == attr_name:
             return attr.get('value', 'N/A')
-    return 'N/A'
+    return "N/A"
 
 def send_telegram_alert(car_view):
-    try:
-        model_name = car_view.get('name', 'Unknown Model').title()
-        attributes = car_view.get('attributes', [])
-        
+    """Formats and fires the alert to your Telegram."""
+    attributes = car_view.get('attributes', [])
+    
+    # Extract the exact details you care about
+    name = car_view.get('name', 'Unknown Car')
+    price = car_view.get('price', {}).get('final', {}).get('amount', {}).get('value', 'Price Unknown')
+    kms = extract_attribute(attributes, 'distance_driven')
+    year = extract_attribute(attributes, 'make_year')
+    dealer = extract_attribute(attributes, 'dealer_location')
+    dealer_phone = "Check dealer profile" 
+    
+    # Try to extract the phone number from the messy JSON string
+    dealer_info_str = extract_attribute(attributes, 'dealer_additional_info')
+    if dealer_info_str != 'N/A':
         try:
-            price = car_view['price']['final']['amount']['value']
-        except KeyError:
-            price = 0
-            
-        # Basic Info
-        km_run = extract_attribute(attributes, 'distance_driven')
-        fuel_type = extract_attribute(attributes, 'fuel_type').title()
-        transmission = extract_attribute(attributes, 'transmission_type').title()
-        owners = extract_attribute(attributes, 'number_of_owners')
-        
-        # Color, Variant, Warranty
-        car_color = extract_attribute(attributes, 'color').title()
-        variant = extract_attribute(attributes, 'car_variant').upper()
-        
-        certified_raw = extract_attribute(attributes, 'true_value_certified')
-        certified = "Yes ✅" if certified_raw.lower() == 'yes' else "No ❌"
-        
-        warranty_raw = extract_attribute(attributes, 'warranty_info')
-        if warranty_raw == '0M' or warranty_raw == '0' or warranty_raw == 'N/A':
-            warranty = "None"
-        else:
-            warranty = warranty_raw
+            info_dict = json.loads(dealer_info_str)
+            dealer_phone = info_dict.get('phone', dealer_phone).strip()
+        except:
+            pass
 
-        # DEEP DETAILS EXTRACTION
-        reg_date_raw = extract_attribute(attributes, 'registration_date')
-        reg_date = reg_date_raw.split(' ')[0] if reg_date_raw != 'N/A' else 'N/A'
-        engine = extract_attribute(attributes, 'engine_rating')[:3]
-        exterior = extract_attribute(attributes, 'exterior_rating')[:3]
-        suspension = extract_attribute(attributes, 'suspension_rating')[:3]
-        functional = extract_attribute(attributes, 'functional_rating')[:3]
-        
-        # Location & RTO
-        rto = extract_attribute(attributes, 'rto').upper()
-        rto_city = extract_attribute(attributes, 'rto_code').title()
-        reg_info = f"{rto} ({rto_city})" if rto != 'N/A' else "Unknown RTO"
-        
-        dealer_name = extract_attribute(attributes, 'dealer_name').title()
-        dealer_address = extract_attribute(attributes, 'dealer_location').title()
-        exact_location = dealer_address if dealer_address and dealer_address != 'N/A' else dealer_name
-        
-        # EXACT PHONE NUMBER EXTRACTION
-        dealer_info_str = extract_attribute(attributes, 'dealer_additional_info')
-        phone_number = "Not Provided"
-        if dealer_info_str != 'N/A':
-            try:
-                dealer_json = json.loads(dealer_info_str)
-                phone_number = dealer_json.get('phone', 'Not Provided')
-            except json.JSONDecodeError:
-                pass
-                
-        # --- 📸 ALL IMAGES EXTRACTION ---
-        images = car_view.get('images', [])
-        image_urls = [img.get('url') for img in images if img.get('url')]
+    url = car_view.get('url', 'https://www.marutisuzukitruevalue.com/used-cars-in-goa')
 
-        # Formatting
-        formatted_price = f"₹ {int(price):,}" if price else "Price N/A"
-        formatted_km = f"{int(km_run):,} km" if km_run != 'N/A' else "N/A km"
-        
-        url_key = car_view.get('urlKey', '')
-        car_url = f"https://www.marutisuzukitruevalue.com/buy-car/{url_key}" if url_key else MAIN_PAGE_URL
+    message = (
+        f"🚨 <b>New True Value Car in Goa!</b> 🚨\n\n"
+        f"🚗 <b>{name}</b> ({year})\n"
+        f"💰 Price: ₹{price:,}\n"
+        f"🛣️ KMS Driven: {kms}\n"
+        f"📍 Dealer: {dealer}\n"
+        f"📞 Phone: {dealer_phone}\n\n"
+        f"<a href='{url}'>View Car Listing</a>"
+    )
 
-        msg = (
-            f"🚀 <b>NEW LISTING DETECTED!</b>\n\n"
-            f"🏎️ <b>{model_name}</b>\n"
-            f"🏷️ <b>Variant:</b> {variant}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"💰 <b>Price:</b> {formatted_price}\n"
-            f"🛣️ <b>Mileage:</b> {formatted_km}\n"
-            f"🎨 <b>Color:</b> {car_color}\n"
-            f"📅 <b>Registered:</b> {reg_date}\n"
-            f"⛽ <b>Fuel:</b> {fuel_type}  |  ⚙️ <b>Trans:</b> {transmission}\n"
-            f"👤 <b>Owners:</b> {owners} Owner(s)\n"
-            f"🆔 <b>RTO:</b> {reg_info}\n\n"
-            f"🛡️ <b>Certified:</b> {certified}\n"
-            f"📑 <b>Warranty:</b> {warranty}\n\n"
-            f"🛠️ <b>MECHANICAL RATINGS:</b>\n"
-            f"  • Engine: {engine} / 5.0\n"
-            f"  • Exterior: {exterior} / 5.0\n"
-            f"  • Suspension: {suspension} / 5.0\n"
-            f"  • Functional: {functional} / 5.0\n\n"
-            f"🏢 <b>Dealer:</b> {dealer_name}\n"
-            f"📍 <b>Location:</b> {exact_location}\n"
-            f"📞 <b>Contact:</b> <code>{phone_number}</code>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━"
-        )
-        
-        reply_markup = {
-            "inline_keyboard": [
-                [{"text": "View Full Listing 🔗", "url": car_url}]
-            ]
-        }
-        
-        # --- 📡 TELEGRAM PAYLOAD ROUTING ---
-        if image_urls:
-            # 1. Send the primary image with the text caption and the button
-            url_main = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-            payload_main = {
-                "chat_id": TELEGRAM_CHAT_ID,
-                "photo": image_urls[0],
-                "caption": msg,
-                "parse_mode": "HTML",
-                "reply_markup": json.dumps(reply_markup)
-            }
-            requests.post(url_main, data=payload_main, timeout=10)
-            
-            # 2. If there are more images, send them as a swipeable gallery
-            if len(image_urls) > 1:
-                # Telegram allows max 10 photos per media group. We sent 1, so we take up to 9 more.
-                media_group = [{"type": "photo", "media": url} for url in image_urls[1:10]]
-                url_gallery = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMediaGroup"
-                payload_gallery = {
-                    "chat_id": TELEGRAM_CHAT_ID,
-                    "media": media_group
-                }
-                requests.post(url_gallery, json=payload_gallery, timeout=15)
-                
-        else:
-            # Fallback if no images exist
-            url_text = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            payload_text = {
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": msg,
-                "parse_mode": "HTML",
-                "reply_markup": json.dumps(reply_markup)
-            }
-            requests.post(url_text, data=payload_text, timeout=10)
-            
-        print(f"--> Rich Telegram alert & gallery sent for: {model_name}")
+    telegram_api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
+
+    try:
+        requests.post(telegram_api_url, json=payload, timeout=10)
     except Exception as e:
-        print(f"--> Failed to send Telegram alert: {e}")
+        print(f"Failed to send Telegram alert: {e}")
 
+# --- The Main Engine (Patched for the new API!) ---
 def check_true_value():
-    print("1. Initializing browser session...")
-    session = requests.Session()
+    print("1. Initializing session...")
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "application/json",
-        "Content-Type": "application/json",
-        "Magento-Environment-Id": "7293d6a7-a379-4715-bbad-9eebf535818f",
-        "Magento-Store-Code": "main_website_store",
-        "X-Api-Key": "0a3aab21269e4943b319cee6e59b2a63",
-        "Origin": "https://www.marutisuzukitruevalue.com",
-        "Referer": "https://www.marutisuzukitruevalue.com/"
     }
 
-    payload = {
-        "query": "query productSearchByDealers($currentPage: Int = 1, $pageSize: Int = 100, $dealerIds: [String!]) { productSearch( current_page: $currentPage, page_size: $pageSize, phrase: \"\", filter: [ { attribute: \"dealer_code\" in: $dealerIds } ], sort: [{ attribute: \"inStock\", direction: DESC }, { attribute: \"distance_driven\", direction: ASC }] ) { items { productView { __typename sku externalId name urlKey url shortDescription description metaDescription metaKeyword metaTitle lastModifiedAt inStock images(roles: [\"image\"]) { url } attributes(roles: []) { name value } ... on SimpleProductView { price { ...priceFields } } ... on ComplexProductView { priceRange { maximum { ...priceFields } minimum { ...priceFields } } } } } page_info { current_page page_size total_pages } total_count } } fragment priceFields on ProductViewPrice { regular { amount { currency value } } final { amount { currency value } } } ",
-        "variables": {
-            "current_page": 1,
-            "page_size": 100,
-            "dealerIds": [
-                "50668-MGA-CHOWG", 
-                "50366-VRN-SAI"
-            ]
-        }
+    # The new GET-based GraphQL query.
+    # Note: I swapped 'car_city: ["Goa"]' with your specific Madgaon & Verna dealer codes to keep it localized.
+    # If you want ALL of Goa, change dealer_code back to car_city.
+    graphql_query = f"""
+    query ProductSearch {{ 
+        productSearch(
+            phrase: "" 
+            filter: [
+                {{ attribute: "price", range: {{ from: 0, to: {MAX_BUDGET} }} }}, 
+                {{ attribute: "dealer_code", in: ["50668-MGA-CHOWG", "50366-VRN-SAI", "50091-DPR-CHOWG"] }}
+            ] 
+            sort: [{{ attribute: "price", direction: ASC }}] 
+            page_size: 100 
+            current_page: 1
+        ) {{ 
+            items {{ 
+                productView {{ 
+                    inStock 
+                    name 
+                    sku 
+                    url 
+                    attributes {{ name value }} 
+                    images {{ url }} 
+                    ... on SimpleProductView {{ 
+                        price {{ 
+                            final {{ amount {{ value }} }} 
+                        }} 
+                    }} 
+                }} 
+            }} 
+        }} 
+    }}
+    """
+
+    params = {
+        "query": graphql_query,
+        "variables": '{"id":2}'
     }
 
     try:
-        print("2. Sending GraphQL POST request...")
-        
-        response = session.post(API_URL, headers=headers, json=payload, timeout=15)
-        print(f"   HTTP Status Code: {response.status_code}")
+        print("2. Sending GET request...")
+        response = requests.get(API_URL, headers=headers, params=params, timeout=15)
         response.raise_for_status() 
-        
         data = response.json()
         
         car_list = data.get('data', {}).get('productSearch', {}).get('items', [])
-        print(f"3. Number of cars identified: {len(car_list)}")
+        print(f"3. Found {len(car_list)} cars matching criteria.")
 
         seen_cars = get_seen_cars()
         is_first_run = len(seen_cars) == 0 
@@ -227,39 +141,32 @@ def check_true_value():
 
         for item in car_list:
             car_view = item.get('productView', {})
-            car_id = car_view.get('sku') or car_view.get('id')
+            car_id = car_view.get('sku')
             
             if not car_id:
-                continue
-                
-            if not car_view.get('inStock', False):
                 continue
 
             try:
                 car_price = int(car_view['price']['final']['amount']['value'])
-            except (KeyError, ValueError, TypeError):
+            except:
                 car_price = 9999999
             
             if car_id not in seen_cars and car_price <= MAX_BUDGET:
+                # We skip sending alerts on the very first run so you don't get spammed with 40 old cars
                 if not is_first_run:
                     send_telegram_alert(car_view)
+                
                 seen_cars.append(car_id)
                 new_cars_found = True
 
         if is_first_run or new_cars_found:
             save_and_sync_cars(seen_cars)
-            print("4. Local tracking database updated.")
+            print("4. Database updated.")
         else:
-            print("4. No new inventory updates detected.")
+            print("4. No new cars found this cycle.")
 
-    except requests.exceptions.Timeout:
-        print("--> Connection timed out waiting for server response. Skipping this cycle.")
     except Exception as e:
-        print(f"CRITICAL SYSTEM ERROR: {e}")
+        print(f"CRITICAL ERROR: {e}")
 
 if __name__ == "__main__":
-    print("🚀 TARGET ACQUIRED: Launching constant live loop tracking (5m intervals)...")
-    while True:
-        check_true_value()
-        print("💤 Sleeping for 5 minutes...")
-        time.sleep(300)
+    check_true_value()
