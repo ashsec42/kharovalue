@@ -25,7 +25,7 @@ def get_seen_cars():
 def save_and_sync_cars(cars_list):
     with open(SEEN_CARS_FILE, 'w') as f:
         json.dump(cars_list, f)
-    
+     
     try:
         subprocess.run(["git", "config", "--global", "user.name", "GitHub Actions Bot"], check=True)
         subprocess.run(["git", "config", "--global", "user.email", "actions@github.com"], check=True)
@@ -200,60 +200,86 @@ def check_true_value():
         "Referer": "https://www.marutisuzukitruevalue.com/"
     }
 
-    # Cleaned standard GraphQL productSearch query filtering directly by dealers and budget
-    graphql_query = f"""
-    query ProductSearch {{ 
-        productSearch(
-            phrase: "" 
-            filter: [
-                {{ attribute: "price", range: {{ from: 0, to: {MAX_BUDGET} }} }}, 
-                {{ attribute: "dealer_code", in: ["50668-MGA-CHOWG", "50366-VRN-SAI"] }}
-            ] 
-            sort: [{{ attribute: "price", direction: ASC }}] 
-            page_size: 100 
-            current_page: 1
-        ) {{ 
-            items {{ 
-                productView {{ 
-                    inStock 
-                    name 
-                    sku 
-                    externalId 
-                    urlKey 
-                    url 
-                    images(roles: ["image"]) {{ url }} 
-                    attributes(roles: []) {{ name value }} 
-                    ... on SimpleProductView {{ 
-                        price {{ 
-                            final {{ amount {{ value currency }} }} 
+    all_car_items = []
+    current_page = 1
+    page_size = 12  # Standard API default page size per page block
+
+    try:
+        print("2. Querying GraphQL API with dynamic pagination loop...")
+        while True:
+            graphql_query = f"""
+            query ProductSearch {{ 
+                productSearch(
+                    phrase: "" 
+                    filter: [
+                        {{ attribute: "price", range: {{ from: 0, to: {MAX_BUDGET} }} }}, 
+                        {{ attribute: "dealer_code", in: ["50668-MGA-CHOWG", "50366-VRN-SAI"] }}
+                    ] 
+                    sort: [{{ attribute: "price", direction: ASC }}] 
+                    page_size: {page_size} 
+                    current_page: {current_page}
+                ) {{ 
+                    total_count
+                    page_info {{
+                        page_size
+                        total_pages
+                        current_page
+                    }}
+                    items {{ 
+                        productView {{ 
+                            inStock 
+                            name 
+                            sku 
+                            externalId 
+                            urlKey 
+                            url 
+                            images(roles: ["image"]) {{ url }} 
+                            attributes(roles: []) {{ name value }} 
+                            ... on SimpleProductView {{ 
+                                price {{ 
+                                    final {{ amount {{ value currency }} }} 
+                                }} 
+                            }} 
                         }} 
                     }} 
                 }} 
-            }} 
-        }} 
-    }}
-    """
+            }}
+            """
 
-    payload = {
-        "query": graphql_query,
-        "variables": {"id": 2}
-    }
+            payload = {
+                "query": graphql_query,
+                "variables": {"id": 2}
+            }
 
-    try:
-        print("2. Sending GraphQL POST request...")
-        response = session.post(API_URL, headers=headers, json=payload, timeout=15)
-        print(f"    HTTP Status Code: {response.status_code}")
-        response.raise_for_status() 
-        
-        data = response.json()
-        car_list = data.get('data', {}).get('productSearch', {}).get('items', [])
-        print(f"3. Number of cars identified: {len(car_list)}")
+            response = session.post(API_URL, headers=headers, json=payload, timeout=15)
+            response.raise_for_status() 
+            
+            data = response.json()
+            product_search_data = data.get('data', {}).get('productSearch', {})
+            
+            total_count = product_search_data.get('total_count', 0)
+            page_info = product_search_data.get('page_info', {})
+            total_pages = page_info.get('total_pages', 1)
+            
+            items = product_search_data.get('items', [])
+            all_car_items.extend(items)
+            
+            print(f"    Fetched page {current_page} of {total_pages} (Items retrieved so far: {len(all_car_items)}/{total_count})")
+
+            # Break loop if we have processed all available pages
+            if current_page >= total_pages or not items:
+                break
+            
+            current_page += 1
+            time.sleep(0.5)  # Polite short delay between pagination requests
+
+        print(f"3. Total unique inventory records collected: {len(all_car_items)}")
 
         seen_cars = get_seen_cars()
         is_first_run = len(seen_cars) == 0 
         new_cars_found = False
 
-        for item in car_list:
+        for item in all_car_items:
             car_view = item.get('productView', {})
             car_id = car_view.get('sku') or car_view.get('externalId')
             
