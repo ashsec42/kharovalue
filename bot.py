@@ -3,6 +3,7 @@ import json
 import os
 import time
 import subprocess
+import urllib.parse  # Added for URL encoding the GET request
 
 # --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -189,33 +190,34 @@ def check_true_value():
     print("1. Initializing browser session...")
     session = requests.Session()
     
+    # Updated headers based on the actual network request
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0",
         "Accept": "application/json",
-        "Content-Type": "application/json",
-        "Magento-Environment-Id": "7293d6a7-a379-4715-bbad-9eebf535818f",
-        "Magento-Store-Code": "main_website_store",
-        "X-Api-Key": "0a3aab21269e4943b319cee6e59b2a63",
-        "Origin": "https://www.marutisuzukitruevalue.com",
-        "Referer": "https://www.marutisuzukitruevalue.com/"
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.marutisuzukitruevalue.com/used-cars-in-goa"
     }
 
     all_car_items = []
     current_page = 1
-    page_size = 12  # Standard API default page size per page block
+    page_size = 12
 
     try:
         print("2. Querying GraphQL API with dynamic pagination loop...")
         while True:
+            # Updated GraphQL to use car_city filter and new sorting
             graphql_query = f"""
             query ProductSearch {{ 
                 productSearch(
                     phrase: "" 
                     filter: [
                         {{ attribute: "price", range: {{ from: 0, to: {MAX_BUDGET} }} }}, 
-                        {{ attribute: "dealer_code", in: ["50668-MGA-CHOWG", "50366-VRN-SAI"] }}
+                        {{ attribute: "car_city", in: ["Goa"] }}
                     ] 
-                    sort: [{{ attribute: "price", direction: ASC }}] 
+                    sort: [
+                        {{ attribute: "listing_score", direction: DESC }},
+                        {{ attribute: "news_from_date", direction: DESC }}
+                    ] 
                     page_size: {page_size} 
                     current_page: {current_page}
                 ) {{ 
@@ -246,12 +248,16 @@ def check_true_value():
             }}
             """
 
-            payload = {
-                "query": graphql_query,
-                "variables": {"id": 2}
+            # Build URL parameters for GET request
+            params = {
+                'query': graphql_query,
+                'variables': '{"id":2}'
             }
+            
+            request_url = f"{API_URL}?{urllib.parse.urlencode(params)}"
 
-            response = session.post(API_URL, headers=headers, json=payload, timeout=15)
+            # Changed from POST to GET
+            response = session.get(request_url, headers=headers, timeout=15)
             response.raise_for_status() 
             
             data = response.json()
@@ -271,7 +277,7 @@ def check_true_value():
                 break
             
             current_page += 1
-            time.sleep(0.5)  # Polite short delay between pagination requests
+            time.sleep(1)  # Polite short delay between pagination requests
 
         print(f"3. Total unique inventory records collected: {len(all_car_items)}")
 
@@ -306,6 +312,8 @@ def check_true_value():
         else:
             print("4. No new inventory updates detected.")
 
+    except requests.exceptions.HTTPError as e:
+        print(f"--> HTTP Error: {e.response.status_code} - {e.response.text}")
     except requests.exceptions.Timeout:
         print("--> Connection timed out waiting for server response. Skipping this cycle.")
     except Exception as e:
